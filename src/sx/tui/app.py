@@ -45,7 +45,7 @@ from sx.render import messages_to_text
 from sx.service import DeleteService, MoveService, move_summary
 from sx.memory import discover_memories, export_memory
 from sx.tui.screens import ConfirmDeleteScreen, MemoryScreen, MoveScreen, OrphanScreen
-from sx.util import human_size, sanitize_text
+from sx.util import claude_config_warning, human_size, sanitize_text
 
 _READY_STYLE = "bold green"
 _DORMANT_STYLE = "dim"
@@ -197,6 +197,11 @@ class SxApp(App):
         self._delete_service = DeleteService(self._adapters_by_name)
         self._move_service = MoveService(self._adapters_by_name)
         self._load_errors = errors
+        # The CLI writes this to stderr, which the alt-screen swallows — so the
+        # TUI reuses the load-error row instead of dropping the warning.
+        warning = claude_config_warning()
+        if warning:
+            self._load_errors.append(("Claude Code", warning))
         self._sessions_by_harness = {}
         for adapter in adapters:
             if Capability.BROWSE not in adapter.capabilities or not adapter.available():

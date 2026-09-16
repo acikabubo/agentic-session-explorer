@@ -45,7 +45,7 @@ want.
 
 | Harness | Status | Store |
 |---|---|---|
-| Claude Code | ✅ verified | `~/.claude/projects/<encoded-cwd>/<id>.jsonl` |
+| Claude Code | ✅ verified | `~/.claude/projects/<encoded-cwd>/<id>.jsonl` (or `$CLAUDE_CONFIG_DIR`) |
 | Codex | ✅ verified | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` |
 | Gemini CLI | ✅ verified | `~/.gemini/tmp/<hash>/chats/session-*.jsonl` |
 | opencode | ✅ verified | `~/.local/share/opencode/opencode.db` (SQLite) |
@@ -57,6 +57,33 @@ want.
 | Crush | 🧩 dormant | SQLite |
 
 ✅ verified on a real machine · 🔎 format known · 🧩 needs probing once installed
+
+### Relocated Claude installs (`CLAUDE_CONFIG_DIR`)
+
+Claude Code lets you move its configuration home with the `CLAUDE_CONFIG_DIR`
+environment variable. `sx` follows it, resolving the store exactly as the
+harness does — export the same value and every path below shifts with it:
+
+```bash
+export CLAUDE_CONFIG_DIR=/path/to/config
+sx harnesses      # confirms which config home sx is reading
+```
+
+Three details worth knowing, all matching Claude Code's own behavior:
+
+- **The value is used as-is and must be absolute.** There is no tilde
+  expansion, and a relative path is ignored with a warning rather than resolved
+  against the working directory — that would make the delete allowlist depend
+  on where you launched `sx` from. The home directory and `/` are refused too.
+- **`.claude.json` moves *into* it.** With the variable set the file is
+  `$CLAUDE_CONFIG_DIR/.claude.json`; without it, `~/.claude.json` — beside
+  `~/.claude`, not inside it.
+- **The `/private/tmp/claude-<uid>` scratchpad does not move**, because Claude
+  derives it from your uid rather than the config home.
+
+If the directory does not exist, Claude is reported as not installed. `sx` never
+falls back to `~/.claude`, so it cannot quietly read — or delete from — a store
+you did not point it at.
 
 ## Run it
 
@@ -324,10 +351,11 @@ the confirmation you see is the whole truth about what is about to happen:
 - **Failures are never reported as success.** A refused deletion says so, keeps
   its row, and leaves the file on disk.
 - **A store-root allowlist** blocks any target outside a harness's own
-  directory, and refuses a store root itself. `~/.claude` is never a root — the
-  individual directories the cascade needs are named one by one, so plugins,
-  settings, credentials and a 282 MB vendored virtualenv stay unreachable. The
-  few paths that do sit inside a needed root are refused explicitly.
+  directory, and refuses a store root itself. Claude's configuration home
+  (`~/.claude`, or `CLAUDE_CONFIG_DIR`) is never a root — the individual
+  directories the cascade needs are named one by one, so plugins, settings,
+  credentials and a 282 MB vendored virtualenv stay unreachable. The few paths
+  that do sit inside a needed root are refused explicitly.
 - **Cascade targets are constructed, not matched.** Each one is built from the
   session id, and a final check refuses any target whose name does not contain
   it.

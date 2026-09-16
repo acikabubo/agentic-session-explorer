@@ -7,6 +7,7 @@ import os
 import re
 import stat
 import tempfile
+import unicodedata
 from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +16,10 @@ from pathlib import Path
 # are legitimate transcript content. Carriage return is included: it enables
 # line-overwriting tricks.
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+
+# Claude Code's own config-home override. When set it replaces ``~/.claude``
+# wholesale, and ``.claude.json`` moves inside it.
+CLAUDE_CONFIG_ENV = "CLAUDE_CONFIG_DIR"
 
 
 def _control_marker(match: re.Match[str]) -> str:
@@ -50,6 +55,109 @@ def sanitize_text(text: str) -> str:
 def home() -> Path:
     """Return the user's home directory."""
     return Path.home()
+
+
+def short_path(path: Path) -> str:
+    """Render a path for display, collapsing a home-directory prefix to ``~``.
+
+    Args:
+        path: The path to render.
+
+    Returns:
+        ``~/.claude/todos`` for a path under the home directory, the absolute
+        path otherwise.
+    """
+    try:
+        return f"~/{path.relative_to(Path.home())}"
+    except ValueError:
+        return str(path)
+
+
+def claude_config_override() -> Path | None:
+    """Return the ``CLAUDE_CONFIG_DIR`` override, when it is usable.
+
+    Claude Code reads this variable raw: it applies no tilde expansion and
+    refuses to start when the value is not absolute. ``sx`` mirrors both, so a
+    relative value is ignored rather than resolved against the working
+    directory — that would let a store root, and with it the delete allowlist,
+    follow ``cwd``.
+
+    The home directory and the filesystem root are refused for the same reason:
+    :func:`sx.adapters.claude.ClaudeAdapter.store_roots` would promote
+    ``~/projects`` and its siblings to store roots, putting ordinary user
+    directories on the delete allowlist.
+
+    Returns:
+        The override directory, or ``None`` when it is unset, blank, relative,
+        the home directory or a filesystem root.
+    """
+    raw = os.environ.get(CLAUDE_CONFIG_ENV, "").strip()
+    if not raw:
+        return None
+    # NFC to match the harness, so a non-ASCII override names the same
+    # directory Claude Code created rather than a decomposed twin.
+    candidate = Path(unicodedata.normalize("NFC", raw))
+    if not candidate.is_absolute():
+        return None
+    if candidate == Path(candidate.anchor) or candidate == Path.home():
+        return None
+    return candidate
+
+
+def claude_config_warning() -> str | None:
+    """Return a warning when ``CLAUDE_CONFIG_DIR`` is set but was ignored.
+
+    Silence would be the wrong default: the user has said where Claude's store
+    lives, and ``sx`` is about to read — and offer to delete from — somewhere
+    else.
+
+    Returns:
+        The warning text, or ``None`` when the variable is unset or honored.
+    """
+    raw = os.environ.get(CLAUDE_CONFIG_ENV, "").strip()
+    if not raw or claude_config_override() is not None:
+        return None
+    candidate = Path(unicodedata.normalize("NFC", raw))
+    if not candidate.is_absolute():
+        reason = "not an absolute path (Claude Code requires one too)"
+    elif candidate == Path(candidate.anchor):
+        reason = "a filesystem root"
+    else:
+        reason = "the home directory"
+    return f"{CLAUDE_CONFIG_ENV} is {reason}; ignoring it and reading ~/.claude."
+
+
+def claude_config_dir(base: Path) -> Path:
+    """Return Claude Code's config home.
+
+    Args:
+        base: Home directory to fall back to. Passed in rather than resolved
+            here: every caller imports ``home`` into its own namespace, and
+            resolving it here instead would slip out from under the monkeypatch
+            a test applies to that namespace.
+
+    Returns:
+        The ``CLAUDE_CONFIG_DIR`` override when usable, else ``base/.claude``.
+    """
+    return claude_config_override() or (base / ".claude")
+
+
+def claude_config_file(base: Path) -> Path:
+    """Return the path of Claude Code's ``.claude.json``.
+
+    Claude Code joins this file onto ``CLAUDE_CONFIG_DIR`` when that is set and
+    onto the home directory otherwise — so under an override it lives *inside*
+    the config directory, at ``<override>/.claude.json``, not at
+    ``~/.claude.json``.
+
+    Args:
+        base: Home directory to fall back to, as for :func:`claude_config_dir`.
+
+    Returns:
+        The config file path, whether or not it currently exists.
+    """
+    override = claude_config_override()
+    return (override / ".claude.json") if override else (base / ".claude.json")
 
 
 def iter_jsonl(path: Path) -> Iterator[dict]:
@@ -403,7 +511,7 @@ def write_text_atomic(path: Path, text: str, *, expect: os.stat_result | None = 
     """Replace a text file's contents atomically, preserving its mode.
 
     Used for the small path registries a move updates (Gemini's
-    ``.project_root`` marker and ``projects.json``, Claude's ``~/.claude.json``).
+    ``.project_root`` marker and ``projects.json``, Claude's ``.claude.json``).
     These belong to a harness that may be running, so they are never truncated in
     place.
 

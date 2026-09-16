@@ -30,7 +30,12 @@ from sx.model import Capability, Session
 from sx.memory import discover_memories, export_memory
 from sx.registry import build_registry
 from sx.service import DeleteService, MoveService, move_summary
-from sx.util import human_size
+from sx.util import (
+    CLAUDE_CONFIG_ENV,
+    claude_config_override,
+    claude_config_warning,
+    human_size,
+)
 
 
 def _maybe_notify_update() -> None:
@@ -158,6 +163,10 @@ def cmd_harnesses(args: argparse.Namespace) -> int:
             status = "not installed"
         mark = "✓" if (installed and browsable) else ("○" if installed else "·")
         print(f"  {mark} {adapter.display:<14} {status}")
+
+    override = claude_config_override()
+    if override is not None:
+        print(f"\n  Claude Code config home: {override}  ({CLAUDE_CONFIG_ENV})")
     return 0
 
 
@@ -409,8 +418,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_move.add_argument(
         "--claude-config", action="store_true",
         help=(
-            "Also re-point Claude's own project state (~/.claude.json trust and "
-            "allowedTools, and ~/.claude/history.jsonl)."
+            "Also re-point Claude's own project state (the .claude.json trust "
+            "and allowedTools entry, and history.jsonl)."
         ),
     )
     p_move.add_argument(
@@ -543,6 +552,10 @@ def main(argv: list[str] | None = None) -> int:
     """
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    warning = claude_config_warning()
+    if warning:
+        print(f"⚠ {warning}", file=sys.stderr)
 
     # A global --no-update-check disables the check for this run (and any
     # subprocess) by setting the same env var users can set permanently.

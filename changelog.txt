@@ -1,6 +1,38 @@
 Changelog
 =========
 
+0.6.1
+-----
+sx now follows Claude Code to a relocated configuration home.
+
+Claude Code lets you move its configuration directory with the
+CLAUDE_CONFIG_DIR environment variable. sx assumed ~/.claude unconditionally,
+so anyone who had set it was browsing the wrong store — an empty or stale one —
+while the delete and move cascades aimed at paths the harness no longer writes
+to. sx now resolves the store the way the harness does, and every derived path
+follows: the projects store, the cascade directories, security state,
+history.jsonl, project memory and the orphan scan.
+
+The subtle part is .claude.json. It moves *into* the configuration directory
+when the variable is set, and sits beside ~/.claude when it is not, so it is
+derived separately rather than from the config directory — the obvious
+simplification would have broken the default path for everyone. The
+/private/tmp/claude-<uid> scratchpad tree does not move, because Claude derives
+it from the uid.
+
+Resolution is strict. A directory that does not exist reports Claude as not
+installed rather than quietly falling back, so sx can never read or delete from
+a store it was not pointed at. A value that is relative, the home directory or
+a filesystem root is ignored with a warning instead: Claude Code requires an
+absolute path too, and honoring a relative one would make the delete allowlist
+depend on the working directory. User-facing labels name the directory actually
+in use, so an orphan row can no longer offer to clean "~/.claude/tasks" while
+pointing somewhere else.
+
+The test suite now scrubs CLAUDE_CONFIG_DIR for every test. Without that, the
+suite's correctness would depend on the developer's own shell — a contributor
+with a relocated install would have had a move test rewrite their live config.
+
 0.6.0
 -----
 Delete now finishes the job, and project memory gets a home of its own.

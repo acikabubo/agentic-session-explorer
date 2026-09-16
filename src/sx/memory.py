@@ -1,6 +1,6 @@
 """Project memory: the documents a harness keeps *between* sessions.
 
-Claude Code writes durable notes to ``~/.claude/projects/<encoded-cwd>/memory/``
+Claude Code writes durable notes to ``<config home>/projects/<encoded-cwd>/memory/``
 — facts about the user, corrections they have given, ongoing project state —
 loaded back into every later session for that directory. They belong to the
 project, not to any one conversation, which is why deleting a session never
@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from sx.util import file_mtime, home, sanitize_text
+from sx.util import claude_config_dir, file_mtime, home, sanitize_text
 
 #: Frontmatter delimiter at the very start of a memory document.
 _FENCE = "---"
@@ -160,7 +160,7 @@ def _project_for_folder(folder: Path) -> str | None:
     deleted still deserves a best-effort label.
 
     Args:
-        folder: A directory under ``~/.claude/projects``.
+        folder: A directory under the config home's ``projects``.
 
     Returns:
         The project directory, or ``None``.
@@ -180,12 +180,14 @@ def discover_memories(root: Path | None = None) -> list[MemoryFile]:
     """Find every memory document across all Claude projects.
 
     Args:
-        root: The projects store to scan; defaults to ``~/.claude/projects``.
+        root: The projects store to scan; defaults to the ``projects``
+            directory of Claude's config home (``CLAUDE_CONFIG_DIR`` when set,
+            otherwise ``~/.claude``).
 
     Returns:
         Memories sorted by project, then name.
     """
-    projects = root or (home() / ".claude" / "projects")
+    projects = root or (claude_config_dir(home()) / "projects")
     if not projects.is_dir():
         return []
 

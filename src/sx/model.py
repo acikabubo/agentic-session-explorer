@@ -238,7 +238,7 @@ class MovePlan:
         note: Human-readable detail about non-file work, such as database rows.
         include_config: Also re-point project state the harness keeps outside its
             session store. Honored only by adapters that have such state (today,
-            Claude's ``~/.claude.json`` and ``~/.claude/history.jsonl``); opt-in,
+            Claude's ``.claude.json`` and ``history.jsonl``); opt-in,
             because those files belong to a harness that may be running.
     """
 

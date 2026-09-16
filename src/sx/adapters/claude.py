@@ -19,6 +19,8 @@ from ..model import (
 )
 from ..util import (
     DROP,
+    claude_config_dir,
+    claude_config_file,
     dir_size,
     home,
     human_size,
@@ -30,6 +32,7 @@ from ..util import (
     repoint,
     rewrite_jsonl,
     scratchpad_root,
+    short_path,
     write_text_atomic,
 )
 from .base import JsonlFolderAdapter
@@ -44,7 +47,7 @@ _COMMAND_NOISE_RE = re.compile(
 _STRAY_TAG_RE = re.compile(r"</?[a-z][a-z0-9-]*>")
 
 # Session ids are UUIDs. Cascade deletion keys off this shape so a malformed or
-# hand-placed session file can never sweep unrelated ~/.claude state.
+# hand-placed session file can never sweep unrelated config-home state.
 _UUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
     r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
@@ -57,7 +60,7 @@ _UUID_ANYWHERE_RE = re.compile(
     r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 )
 
-# Auxiliary ("cascade") directories under ``~/.claude`` searched by name prefix.
+# Auxiliary ("cascade") directories under the config home, searched by prefix.
 # Only ``file-history`` actually keys its entries by session id; the other three
 # are kept because they cost one directory listing and a future version of the
 # harness may start using them, but on the sampled machine they never match:
@@ -66,12 +69,12 @@ _UUID_ANYWHERE_RE = re.compile(
 # agent ids, which are not session ids. Do not assume these fire.
 _CASCADE_DIRS = ("todos", "file-history", "shell-snapshots", "sessions")
 
-# Directories under ``~/.claude`` holding one entry named *exactly* for a session
+# Directories under the config home holding one entry named *exactly* for a session
 # id. These are built from the id rather than searched for, so there is no
 # matching to get wrong.
 _SESSION_DIRS = ("session-env", "tasks")
 
-# Files under ``~/.claude`` whose name embeds the session id in the middle. A
+# Files under the config home whose name embeds the session id in the middle. A
 # prefix search misses them entirely, which is why they were never cleaned up.
 _SESSION_FILES = (
     ("security", "security_warnings_state_{sid}.json"),
@@ -79,7 +82,7 @@ _SESSION_FILES = (
 )
 
 # Directories that must be reachable by the delete guard because the cascade
-# writes into them. ``~/.claude`` itself is deliberately NOT a store root: it
+# writes into them. The config home itself is deliberately NOT a store root: it
 # holds ``plugins/`` (591 MB here), ``security/agent-sdk-venv`` (282 MB),
 # ``settings.json`` and ``.credentials.json``. Naming the individual parents
 # keeps the blast radius to directories this tool understands.
@@ -170,10 +173,13 @@ def _decode_folder(name: str) -> str:
 class ClaudeAdapter(JsonlFolderAdapter):
     """Adapter for Claude Code chat sessions.
 
-    Sessions live at ``~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl``
+    Sessions live at ``<config home>/projects/<encoded-cwd>/<sessionId>.jsonl``
     where the folder name encodes the project working directory. Several sibling
-    directories under ``~/.claude`` hold correlated artifacts; the primary store
-    root is always ``~/.claude/projects``.
+    directories under the config home hold correlated artifacts; the primary
+    store root is always its ``projects`` directory.
+
+    The config home is ``~/.claude`` unless ``CLAUDE_CONFIG_DIR`` relocates it,
+    which every path here honors via :meth:`_config_dir`.
 
     Attributes:
         name: Machine identifier (``"claude"``).
@@ -183,20 +189,54 @@ class ClaudeAdapter(JsonlFolderAdapter):
     name = "claude"
     display = "Claude Code"
 
+    def _config_dir(self) -> Path:
+        """Return Claude's config home, honoring ``CLAUDE_CONFIG_DIR``.
+
+        ``home`` is resolved here, in this module's namespace and at call time,
+        so a test that redirects it keeps every derived path inside its sandbox.
+
+        Returns:
+            The override directory when one is set, else ``~/.claude``.
+        """
+        return claude_config_dir(home())
+
+    def _config_file(self) -> Path:
+        """Return Claude's ``.claude.json``, honoring ``CLAUDE_CONFIG_DIR``.
+
+        Returns:
+            ``<override>/.claude.json`` under an override — the file moves
+            *inside* the config directory — else ``~/.claude.json``.
+        """
+        return claude_config_file(home())
+
+    def available(self) -> bool:
+        """Return True when Claude's configured store directory exists.
+
+        Deliberately not the inherited "any store root exists": the scratchpad
+        root under ``/private/tmp`` is a store root, but it is derived from the
+        uid rather than the config home, so it outlives an uninstall and does
+        not follow ``CLAUDE_CONFIG_DIR``. Keying on it would report a
+        redirected-but-absent store as installed.
+
+        Returns:
+            True if the config directory is present.
+        """
+        return self._config_dir().is_dir()
+
     def store_roots(self) -> list[Path]:
         """Return the managed directories for Claude.
 
-        The primary session store (``~/.claude/projects``) is always first. Each
-        directory the cascade reaches into is named individually — never
-        ``~/.claude`` as a whole, which also contains plugins, a 282 MB vendored
-        virtualenv, the settings file and the credentials file. Claude's
-        per-session scratchpad tree under ``/private/tmp`` is included for the
-        same reason: the guard has to permit it, and nothing wider.
+        The primary session store (``<config dir>/projects``) is always first.
+        Each directory the cascade reaches into is named individually — never
+        the config directory as a whole, which also contains plugins, a 282 MB
+        vendored virtualenv, the settings file and the credentials file.
+        Claude's per-session scratchpad tree under ``/private/tmp`` is included
+        for the same reason: the guard has to permit it, and nothing wider.
 
         Returns:
             A list of directories, primary store first.
         """
-        base = home() / ".claude"
+        base = self._config_dir()
         roots = [base / "projects"]
         for sub in _GUARDED_SUBDIRS:
             d = base / sub
@@ -208,7 +248,7 @@ class ClaudeAdapter(JsonlFolderAdapter):
         return roots
 
     def protected_paths(self) -> list[Path]:
-        """Return the bulk inside ``~/.claude/security`` that is never deletable.
+        """Return the bulk inside ``security/`` that is never deletable.
 
         ``security/`` has to be a store root so the cascade can reach
         ``security_warnings_state_<session-id>.*``, but it also holds a 282 MB
@@ -217,9 +257,10 @@ class ClaudeAdapter(JsonlFolderAdapter):
         makes that a guarantee rather than a property of the calling code.
 
         Returns:
-            Paths under ``~/.claude/security`` that must never be removed.
+            Paths under the config directory's ``security/`` that must never be
+            removed.
         """
-        security = home() / ".claude" / "security"
+        security = self._config_dir() / "security"
         return [security / "agent-sdk-venv", security / "log.txt", security / "log.txt.1"]
 
     def session_files(self) -> Iterator[Path]:
@@ -229,9 +270,9 @@ class ClaudeAdapter(JsonlFolderAdapter):
         mistaken for sessions.
 
         Returns:
-            An iterator over ``~/.claude/projects/*/*.jsonl`` files.
+            An iterator over ``<config dir>/projects/*/*.jsonl`` files.
         """
-        projects = home() / ".claude" / "projects"
+        projects = self._projects_root()
         if not projects.exists():
             return
         yield from sorted(projects.glob("*/*.jsonl"))
@@ -507,7 +548,7 @@ class ClaudeAdapter(JsonlFolderAdapter):
         if not sid or not _UUID_RE.match(sid):
             return matches
 
-        base = home() / ".claude"
+        base = self._config_dir()
         for sub in _CASCADE_DIRS:
             directory = base / sub
             if not directory.is_dir():
@@ -628,7 +669,7 @@ class ClaudeAdapter(JsonlFolderAdapter):
         Returns:
             A list of discovered orphans.
         """
-        projects = home() / ".claude" / "projects"
+        projects = self._projects_root()
         orphans: list[Orphan] = self._stale_session_artifacts()
         if not projects.is_dir():
             return orphans
@@ -669,7 +710,7 @@ class ClaudeAdapter(JsonlFolderAdapter):
 
     def _projects_root(self) -> Path:
         """Return the primary session store (``~/.claude/projects``)."""
-        return home() / ".claude" / "projects"
+        return self._config_dir() / "projects"
 
     def session_sidecar(self, session: Session) -> Path | None:
         """Return the ``<session-id>/`` directory beside a transcript, if present.
@@ -969,7 +1010,7 @@ class ClaudeAdapter(JsonlFolderAdapter):
 
     def _repoint_settings(self, plan: MovePlan, result: MoveResult, *, dry_run: bool) -> int:
         """Re-key the ``projects`` map in ``~/.claude.json``. Returns entries changed."""
-        config = home() / ".claude.json"
+        config = self._config_file()
         if not config.is_file():
             return 0
         try:
@@ -1010,7 +1051,7 @@ class ClaudeAdapter(JsonlFolderAdapter):
 
     def _repoint_history(self, plan: MovePlan, result: MoveResult, *, dry_run: bool) -> int:
         """Re-point the ``project`` field in ``~/.claude/history.jsonl``."""
-        history = home() / ".claude" / "history.jsonl"
+        history = self._history_path()
         if not history.is_file():
             return 0
 
@@ -1035,7 +1076,7 @@ class ClaudeAdapter(JsonlFolderAdapter):
 
     def _history_path(self) -> Path:
         """Return ``~/.claude/history.jsonl``."""
-        return home() / ".claude" / _HISTORY_FILE
+        return self._config_dir() / _HISTORY_FILE
 
     def _drop_history_rows(
         self,
@@ -1144,7 +1185,7 @@ class ClaudeAdapter(JsonlFolderAdapter):
 
     def _settings_entry(self, project: str) -> dict | None:
         """Return the ``~/.claude.json`` settings for a project, if any."""
-        config = home() / ".claude.json"
+        config = self._config_file()
         if not config.is_file():
             return None
         try:
@@ -1179,7 +1220,7 @@ class ClaudeAdapter(JsonlFolderAdapter):
         if self._settings_entry(leftovers.project_path) is not None:
             error = self._drop_settings_entry(leftovers.project_path, dry_run=dry_run)
             if error is not None:
-                result.skipped[home() / ".claude.json"] = error
+                result.skipped[self._config_file()] = error
             else:
                 details.append(
                     "would remove Claude settings entry"
@@ -1204,7 +1245,7 @@ class ClaudeAdapter(JsonlFolderAdapter):
         """Remove a project's key from ``~/.claude.json``. Returns an error or None."""
         if dry_run:
             return None
-        config = home() / ".claude.json"
+        config = self._config_file()
         try:
             before = config.stat()
             data = json.loads(config.read_text(encoding="utf-8"))
@@ -1229,7 +1270,10 @@ class ClaudeAdapter(JsonlFolderAdapter):
             A list of :attr:`OrphanKind.STALE_SESSION` orphans.
         """
         live = {path.stem for path in self.session_files()}
-        base = home() / ".claude"
+        base = self._config_dir()
+        # Labelled with the store actually in use: under CLAUDE_CONFIG_DIR a
+        # hardcoded "~/.claude/…" would name a directory nothing was read from.
+        label = short_path(base)
         groups: list[tuple[str, list[Path]]] = []
 
         for sub in ("file-history",) + _SESSION_DIRS:
@@ -1242,7 +1286,7 @@ class ClaudeAdapter(JsonlFolderAdapter):
                 if _UUID_RE.match(entry.name) and entry.name not in live
             ]
             if stale:
-                groups.append((f"~/.claude/{sub}", stale))
+                groups.append((f"{label}/{sub}", stale))
 
         security = base / "security"
         if security.is_dir():
@@ -1252,7 +1296,7 @@ class ClaudeAdapter(JsonlFolderAdapter):
                 if found and found.group(0) not in live:
                     stale.append(entry)
             if stale:
-                groups.append(("~/.claude/security", stale))
+                groups.append((f"{label}/security", stale))
 
         scratch_root = scratchpad_root()
         if scratch_root.is_dir():
